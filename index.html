@@ -58,26 +58,106 @@
             border-radius: var(--border-radius);
             overflow: hidden;
             box-shadow: var(--shadow);
-            margin-bottom: 1.5rem;
+            margin-bottom: 1rem;
             min-height: 250px;
             display: flex;
             align-items: center;
             justify-content: center;
         }
 
-        video, canvas {
+        video {
             display: block;
             width: 100%;
             height: auto;
             border-radius: var(--border-radius);
         }
 
-        #canvas-element {
-            display: none;
-        }
-
         .hidden {
             display: none !important;
+        }
+
+        #image-strip-container {
+            width: 100%;
+            margin-bottom: 1.5rem;
+            background-color: var(--surface-color);
+            border-radius: var(--border-radius);
+            box-shadow: var(--shadow);
+            padding: 0.5rem;
+            box-sizing: border-box;
+        }
+
+        #image-strip {
+            display: flex;
+            gap: 0.75rem;
+            overflow-x: auto;
+            padding: 0.5rem;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: none; /* Firefox */
+        }
+
+        #image-strip::-webkit-scrollbar {
+            display: none; /* Safari and Chrome */
+        }
+
+        .thumbnail-wrapper {
+            position: relative;
+            flex-shrink: 0;
+            width: 80px;
+            height: 80px;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            background-color: #e9ecef;
+        }
+
+        .thumbnail-wrapper img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .thumbnail-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.6);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            border-radius: 8px;
+        }
+        
+        .thumbnail-overlay .loader {
+            width: 24px;
+            height: 24px;
+            border-width: 3px;
+        }
+
+        .thumbnail-wrapper.processed .thumbnail-overlay {
+            background-color: rgba(40, 167, 69, 0.7);
+        }
+
+        .thumbnail-wrapper.failed .thumbnail-overlay {
+            background-color: rgba(220, 53, 69, 0.7);
+        }
+
+        .thumbnail-wrapper.processed .loader, .thumbnail-wrapper.failed .loader {
+           display: none;
+        }
+
+        .thumbnail-wrapper .status-icon {
+            display: none;
+            font-size: 2.5rem;
+            line-height: 1;
+            color: white;
+            font-family: Arial, sans-serif;
+        }
+
+        .thumbnail-wrapper.processed .status-icon.checkmark,
+        .thumbnail-wrapper.failed .status-icon.cross {
+            display: block;
         }
 
         #controls {
@@ -192,12 +272,16 @@
     <div id="app-container">
         <header>
             <h1>AI Inventory Scanner</h1>
-            <p>Snap a photo of your items to count them instantly.</p>
+            <p>Take one or more photos of your items to count them.</p>
         </header>
 
         <div id="media-container">
             <video id="video-element" autoplay playsinline></video>
-            <canvas id="canvas-element"></canvas>
+            <canvas id="canvas-element" class="hidden"></canvas>
+        </div>
+
+        <div id="image-strip-container" class="hidden">
+            <div id="image-strip"></div>
         </div>
 
         <div id="status-message">
@@ -209,12 +293,9 @@
             
             <div id="capture-controls" class="button-group hidden">
                 <button id="capture-btn">Take Picture</button>
+                <button id="analyze-btn">Analyze Inventory</button>
             </div>
 
-            <div id="analysis-controls" class="button-group hidden">
-                <button id="analyze-btn">Analyze Inventory</button>
-                <button id="retake-btn" class="secondary">Retake</button>
-            </div>
              <div id="reset-controls" class="button-group hidden">
                 <button id="reset-btn">Scan New Items</button>
             </div>
@@ -235,29 +316,36 @@
             const startBtn = document.getElementById('start-btn');
             const captureBtn = document.getElementById('capture-btn');
             const analyzeBtn = document.getElementById('analyze-btn');
-            const retakeBtn = document.getElementById('retake-btn');
             const resetBtn = document.getElementById('reset-btn');
 
             const captureControls = document.getElementById('capture-controls');
-            const analysisControls = document.getElementById('analysis-controls');
             const resetControls = document.getElementById('reset-controls');
             
+            const mediaContainer = document.getElementById('media-container');
+            const imageStripContainer = document.getElementById('image-strip-container');
+            const imageStrip = document.getElementById('image-strip');
+
             const resultsContainer = document.getElementById('results-container');
             const resultsList = document.getElementById('results-list');
             const statusMessage = document.getElementById('status-message');
             const loader = document.getElementById('loader');
 
             let stream;
+            let capturedImages = [];
+            let imageIdCounter = 0;
 
             // UI state management
             const showState = (state) => {
                 startBtn.classList.add('hidden');
                 captureControls.classList.add('hidden');
-                analysisControls.classList.add('hidden');
                 resetControls.classList.add('hidden');
                 video.classList.add('hidden');
-                canvas.classList.add('hidden');
                 resultsContainer.classList.add('hidden');
+                imageStripContainer.classList.add('hidden');
+                loader.classList.add('hidden');
+                statusMessage.textContent = '';
+                mediaContainer.style.minHeight = '250px';
+
 
                 switch(state) {
                     case 'initial':
@@ -266,23 +354,24 @@
                     case 'streaming':
                         captureControls.classList.remove('hidden');
                         video.classList.remove('hidden');
-                        break;
-                    case 'captured':
-                        analysisControls.classList.remove('hidden');
-                        canvas.classList.remove('hidden');
+                        if (capturedImages.length > 0) {
+                            imageStripContainer.classList.remove('hidden');
+                        }
                         break;
                     case 'analyzing':
-                        analysisControls.classList.remove('hidden');
+                        captureControls.classList.remove('hidden');
+                        captureBtn.disabled = true;
                         analyzeBtn.disabled = true;
-                        retakeBtn.disabled = true;
-                        canvas.classList.remove('hidden');
+                        imageStripContainer.classList.remove('hidden');
                         loader.classList.remove('hidden');
-                        statusMessage.textContent = 'Analyzing image...';
+                        statusMessage.textContent = 'Analyzing images...';
+                        mediaContainer.style.minHeight = '0px';
                         break;
                     case 'results':
                         resetControls.classList.remove('hidden');
-                        canvas.classList.remove('hidden');
+                        imageStripContainer.classList.remove('hidden');
                         resultsContainer.classList.remove('hidden');
+                        mediaContainer.style.minHeight = '0px';
                         break;
                 }
             };
@@ -292,6 +381,13 @@
                     if (stream) {
                         stream.getTracks().forEach(track => track.stop());
                     }
+                    // Reset state for a new session
+                    capturedImages = [];
+                    imageIdCounter = 0;
+                    imageStrip.innerHTML = '';
+                    resultsList.innerHTML = '';
+                    analyzeBtn.disabled = true;
+
                     statusMessage.textContent = '';
                     stream = await navigator.mediaDevices.getUserMedia({
                         video: { facingMode: 'environment' }
@@ -306,49 +402,107 @@
                 }
             };
 
+            const createThumbnail = (id, src) => {
+                const wrapper = document.createElement('div');
+                wrapper.id = `thumb-${id}`;
+                wrapper.className = 'thumbnail-wrapper';
+                
+                const img = document.createElement('img');
+                img.src = src;
+                
+                const overlay = document.createElement('div');
+                overlay.className = 'thumbnail-overlay hidden';
+                overlay.innerHTML = `<div class="loader"></div><span class="status-icon checkmark">✓</span><span class="status-icon cross">×</span>`;
+
+                wrapper.appendChild(img);
+                wrapper.appendChild(overlay);
+                imageStrip.appendChild(wrapper);
+
+                wrapper.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'end' });
+            };
+
             const captureImage = () => {
                 canvas.width = video.videoWidth;
                 canvas.height = video.videoHeight;
                 context.drawImage(video, 0, 0, canvas.width, canvas.height);
-                stream.getTracks().forEach(track => track.stop());
-                showState('captured');
+                const imageDataUrl = canvas.toDataURL('image/jpeg', 0.9);
+                
+                const imageId = imageIdCounter++;
+                capturedImages.push({ id: imageId, dataUrl: imageDataUrl, status: 'pending' });
+
+                createThumbnail(imageId, imageDataUrl);
+
+                imageStripContainer.classList.remove('hidden');
+                analyzeBtn.disabled = false;
             };
 
-            const analyzeImage = async () => {
-                showState('analyzing');
-                const imageDataUrl = canvas.toDataURL('image/jpeg');
-
-                try {
-                    const completion = await websim.chat.completions.create({
-                        messages: [
-                            {
-                                role: 'system',
-                                content: `You are an expert inventory counting AI. Analyze the user's image, identify each distinct type of item, and count how many of each there are. Make the best estimation possible. Provide your response as a JSON object, and nothing else, using this schema: {"items": [{"name": "string", "quantity": number}]}`
-                            },
-                            {
-                                role: 'user',
-                                content: [
-                                    { type: 'text', text: 'Count the items in this image.' },
-                                    { type: 'image_url', image_url: { url: imageDataUrl } }
-                                ]
+            const aggregateResults = (resultsArray) => {
+                const aggregated = {};
+                resultsArray.forEach(result => {
+                    if (result && result.items) {
+                        result.items.forEach(item => {
+                            const name = item.name.trim();
+                            const lowerCaseName = name.toLowerCase();
+                            if (aggregated[lowerCaseName]) {
+                                aggregated[lowerCaseName].quantity += item.quantity;
+                            } else {
+                                aggregated[lowerCaseName] = {
+                                    name: name,
+                                    quantity: item.quantity
+                                };
                             }
-                        ],
-                        json: true
-                    });
-                    
-                    const result = JSON.parse(completion.content);
-                    displayResults(result.items);
+                        });
+                    }
+                });
+                return Object.values(aggregated).sort((a,b) => b.quantity - a.quantity);
+            };
 
-                } catch (error) {
-                    console.error('AI analysis failed:', error);
-                    statusMessage.textContent = 'Analysis failed. Please try again.';
-                    showState('captured');
-                } finally {
-                    loader.classList.add('hidden');
-                    statusMessage.textContent = '';
-                    analyzeBtn.disabled = false;
-                    retakeBtn.disabled = false;
+            const analyzeInventory = async () => {
+                showState('analyzing');
+                if(stream) {
+                    stream.getTracks().forEach(track => track.stop());
                 }
+
+                const analysisPromises = capturedImages.map(async (image) => {
+                    const thumbWrapper = document.getElementById(`thumb-${image.id}`);
+                    const thumbOverlay = thumbWrapper.querySelector('.thumbnail-overlay');
+                    thumbOverlay.classList.remove('hidden');
+                    
+                    try {
+                        const completion = await websim.chat.completions.create({
+                            messages: [
+                                {
+                                    role: 'system',
+                                    content: `You are an expert inventory counting AI. Analyze the user's image, identify each distinct type of item, and count how many of each there are. Make the best estimation possible. Use the singular form for item names. If no items are found, return an empty items array. Provide your response as a JSON object, and nothing else, using this schema: {"items": [{"name": "string", "quantity": number}]}`
+                                },
+                                {
+                                    role: 'user',
+                                    content: [
+                                        { type: 'text', text: 'Count the items in this image.' },
+                                        { type: 'image_url', image_url: { url: image.dataUrl } }
+                                    ]
+                                }
+                            ],
+                            json: true
+                        });
+                        
+                        const result = JSON.parse(completion.content);
+                        image.status = 'processed';
+                        thumbWrapper.classList.add('processed');
+                        return result;
+
+                    } catch (error) {
+                        console.error(`AI analysis failed for image ${image.id}:`, error);
+                        image.status = 'failed';
+                        thumbWrapper.classList.add('failed');
+                        return null; // Return null for failed analyses
+                    }
+                });
+
+                const allResults = await Promise.all(analysisPromises);
+                const validResults = allResults.filter(r => r !== null);
+                const aggregatedItems = aggregateResults(validResults);
+                displayResults(aggregatedItems);
             };
             
             const displayResults = (items) => {
@@ -363,15 +517,14 @@
                         resultsList.appendChild(li);
                     });
                 } else {
-                    resultsList.innerHTML = '<li>No items were detected. Try a clearer picture.</li>';
+                    resultsList.innerHTML = '<li>No items were detected across the captured images.</li>';
                 }
                 showState('results');
             };
             
             startBtn.addEventListener('click', startCamera);
             captureBtn.addEventListener('click', captureImage);
-            retakeBtn.addEventListener('click', startCamera);
-            analyzeBtn.addEventListener('click', analyzeImage);
+            analyzeBtn.addEventListener('click', analyzeInventory);
             resetBtn.addEventListener('click', startCamera);
 
             showState('initial');
@@ -380,4 +533,3 @@
 <script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"4c6229722a6346bc8eb5cb0e5eae5d41","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
 </body>
 </html>
-
